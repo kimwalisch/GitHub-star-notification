@@ -1,5 +1,6 @@
 import os
 import requests
+import smtplib
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -89,7 +90,11 @@ def send_email(repo_updates):
     part = MIMEText(text, "plain")
     message.attach(part)
     
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+    # Use port 587 with STARTTLS
+    with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        server.ehlo()  # Identify ourselves to the server
+        server.starttls()  # Upgrade connection to TLS
+        server.ehlo()  # Re-identify after TLS handshake
         server.login(sender_email, email_password)
         server.sendmail(sender_email, receiver_email, message.as_string())
 
