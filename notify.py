@@ -62,14 +62,14 @@ def get_new_stars(last_checked):
     return repo_updates
 
 def send_email(repo_updates):
-    sender_email = os.environ.get('SENDER_EMAIL')
-    receiver_email = os.environ.get('RECEIVER_EMAIL')
+    sender_email = os.environ.get('EMAIL_ADDRESS')
+    receiver_email = os.environ.get('EMAIL_ADDRESS')
     email_password = os.environ.get('EMAIL_PASSWORD')
 
     if not all([sender_email, receiver_email, email_password]):
         missing = []
-        if not sender_email: missing.append("SENDER_EMAIL")
-        if not receiver_email: missing.append("RECEIVER_EMAIL")
+        if not sender_email: missing.append("EMAIL_ADDRESS")
+        if not receiver_email: missing.append("EMAIL_ADDRESS")
         if not email_password: missing.append("EMAIL_PASSWORD")
         raise ValueError(f"Missing environment variables: {', '.join(missing)}")
 
