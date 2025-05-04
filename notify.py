@@ -1,4 +1,5 @@
 import os
+import json
 import requests
 import smtplib
 from datetime import datetime, timezone
@@ -7,6 +8,7 @@ from email.mime.multipart import MIMEMultipart
 
 LOG_FILE = os.path.expanduser("~/status.log")
 MAX_LOG_LINES = 1000
+DATA_FILE = "repo_star_counts.json"
 
 def log_status(message, error=False):
     """Append status message to log file with rotation"""
@@ -38,28 +40,21 @@ def get_all_pages(url, headers, params=None):
         params = {}  # Subsequent pages use link headers
     return results
 
-def get_new_stars(last_checked):
-    headers = {'Accept': 'application/vnd.github.v3+json'}
-    repos_url = 'https://api.github.com/users/kimwalisch/repos'
+def get_current_repo_counts():
+    """Get current star counts for all repositories"""
+    github_token = os.environ.get('GITHUB_TOKEN')
+    if not github_token:
+        raise ValueError("GITHUB_TOKEN environment variable not set")
+
+    headers = {
+        'Authorization': f'token {github_token}',
+        'Accept': 'application/vnd.github.v3+json'
+    }
     
+    repos_url = 'https://api.github.com/users/kimwalisch/repos'
     repos = get_all_pages(repos_url, headers, {'per_page': 100})
-    repo_updates = {}
-
-    for repo in repos:
-        repo_name = repo['name']
-        stargazers_url = f'https://api.github.com/repos/kimwalisch/{repo_name}/stargazers'
-        
-        params = {'since': last_checked.isoformat(), 'per_page': 100}
-        stargazers = get_all_pages(stargazers_url, headers, params)
-        
-        if stargazers:
-            repo_data = requests.get(f'https://api.github.com/repos/kimwalisch/{repo_name}', headers=headers).json()
-            repo_updates[repo_name] = {
-                'new_stars': len(stargazers),
-                'current_total': repo_data['stargazers_count']
-            }
-
-    return repo_updates
+    
+    return {repo['name']: repo['stargazers_count'] for repo in repos}
 
 def send_email(repo_updates):
     sender_email = os.environ.get('EMAIL_ADDRESS')
@@ -78,62 +73,65 @@ def send_email(repo_updates):
     message["From"] = sender_email
     message["To"] = receiver_email
 
-    text = "GitHub Star Updates:\n\n"
+    text = ""
     total_new = sum(data['new_stars'] for data in repo_updates.values())
 
     for repo, data in repo_updates.items():
         if data['new_stars'] > 0:
-            text += f"Repository: {repo}\n"
+            text += f"{repo}\n"
             text += f"New Stars: +{data['new_stars']}\n"
-            text += f"Current Total Stars: {data['current_total']}\n\n"
+            text += f"Total Stars: {data['current_total']}\n\n"
 
     part = MIMEText(text, "plain")
     message.attach(part)
     
-    # Use port 587 with STARTTLS
     with smtplib.SMTP("smtp.gmail.com", 587) as server:
-        server.ehlo()  # Identify ourselves to the server
-        server.starttls()  # Upgrade connection to TLS
-        server.ehlo()  # Re-identify after TLS handshake
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
         server.login(sender_email, email_password)
         server.sendmail(sender_email, receiver_email, message.as_string())
 
 def main():
     first_run = False
 
+    # Load stored data
     try:
-        # Check if this is the first run
-        try:
-            with open('last_checked.txt', 'r') as f:
-                last_checked = datetime.fromisoformat(f.read().strip())
-        except FileNotFoundError:
-            first_run = True
-            last_checked = datetime.now(timezone.utc)
-            with open('last_checked.txt', 'w') as f:
-                f.write(last_checked.isoformat())
+        with open(DATA_FILE, 'r') as f:
+            stored_data = json.load(f)
+    except FileNotFoundError:
+        stored_data = {}
+        first_run = True
 
-        # Check for new stars
-        repo_updates = get_new_stars(last_checked)
-        total_new = sum(data['new_stars'] for data in repo_updates.values())
-        
-        # Send email only if it's not the first run
-        if repo_updates and not first_run:
-            send_email(repo_updates)
-        
-        # Update last checked time
-        current_time = datetime.now(timezone.utc)
-        with open('last_checked.txt', 'w') as f:
-            f.write(current_time.isoformat())
-        
-        # Log status with first-run indicator
-        log_message = f"Checked successfully - {total_new} new stars found"
-        if first_run:
-            log_message += " (first run - email skipped)"
-        log_status(log_message)
+    # Get current repository counts
+    current_counts = get_current_repo_counts()
 
-    except Exception as e:
-        log_status(f"Script failed: {str(e)}", error=True)
-        raise
+    # Compare with stored data
+    repo_updates = {}
+    for repo, current_count in current_counts.items():
+        stored_count = stored_data.get(repo, 0)
+        new_stars = current_count - stored_count
+        
+        if new_stars > 0:
+            repo_updates[repo] = {
+                'new_stars': new_stars,
+                'current_total': current_count
+            }
+
+    # Update stored data
+    with open(DATA_FILE, 'w') as f:
+        json.dump(current_counts, f)
+
+    # Send notification if needed
+    total_new = sum(data['new_stars'] for data in repo_updates.values())
+    if repo_updates and not first_run:
+        send_email(repo_updates)
+
+    # Log status
+    log_message = f"Checked successfully - {total_new} new stars found"
+    if first_run:
+        log_message += " (first run - email skipped)"
+    log_status(log_message)
 
 if __name__ == '__main__':
     main()
