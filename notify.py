@@ -1,9 +1,7 @@
-import boto3
 import os
 import json
 import requests
 import smtplib
-from botocore.exceptions import ClientError
 from datetime import datetime, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -31,9 +29,6 @@ def log_status(message, error=False):
         f.writelines(lines)
         f.write(new_entry)
 
-    if error:
-        raise Exception(message)
-
 def get_all_pages(url, headers, params=None):
     """Fetch all pages from a GitHub API endpoint"""
     results = []
@@ -49,7 +44,7 @@ def get_current_repo_counts():
     """Get current star counts for all repositories"""
     github_token = os.environ.get('GITHUB_TOKEN')
     if not github_token:
-        log_status("Missing environment variable: GITHUB_TOKEN", error=True)
+        raise ValueError("GITHUB_TOKEN environment variable not set")
 
     headers = {
         'Authorization': f'token {github_token}',
@@ -62,12 +57,24 @@ def get_current_repo_counts():
     return {repo['name']: repo['stargazers_count'] for repo in repos}
 
 def send_email(repo_updates):
-    email_address = os.environ.get('EMAIL_ADDRESS')
-    if not email_address:
-        log_status("Missing environment variable: EMAIL_ADDRESS", error=True)
+    sender_email = os.environ.get('EMAIL_ADDRESS')
+    receiver_email = os.environ.get('EMAIL_ADDRESS')
+    email_password = os.environ.get('EMAIL_PASSWORD')
 
-    total_new = sum(data['new_stars'] for data in repo_updates.values())
+    if not all([sender_email, receiver_email, email_password]):
+        missing = []
+        if not sender_email: missing.append("EMAIL_ADDRESS")
+        if not receiver_email: missing.append("EMAIL_ADDRESS")
+        if not email_password: missing.append("EMAIL_PASSWORD")
+        raise ValueError(f"Missing environment variables: {', '.join(missing)}")
+
+    message = MIMEMultipart("alternative")
+    message["Subject"] = "GitHub Star Updates"
+    message["From"] = sender_email
+    message["To"] = receiver_email
+
     text = ""
+    total_new = sum(data['new_stars'] for data in repo_updates.values())
 
     for repo, data in repo_updates.items():
         if data['new_stars'] > 0:
@@ -75,23 +82,15 @@ def send_email(repo_updates):
             text += f"New Stars: +{data['new_stars']}\n"
             text += f"Total Stars: {data['current_total']}\n\n"
 
-    client = boto3.client('ses', region_name="us-east-2")
-
-    try:
-        client.send_email(
-            Source=email_address,
-            Destination={
-                'ToAddresses': [email_address],
-            },
-            Message={
-                'Subject': {'Data': "GitHub star notification"},
-                'Body': {
-                    'Text': {'Data': text}
-                }
-            }
-        )
-    except ClientError as e:
-        log_status(e.response['Error']['Message'], error=True)
+    part = MIMEText(text, "plain")
+    message.attach(part)
+    
+    with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
+        server.login(sender_email, email_password)
+        server.sendmail(sender_email, receiver_email, message.as_string())
 
 def main():
     first_run = False
